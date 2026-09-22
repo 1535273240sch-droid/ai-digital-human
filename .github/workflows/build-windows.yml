@@ -1,0 +1,78 @@
+name: Build Windows Launcher
+
+# 在 GitHub 的云端 Windows 机器上自动打包，本地不需要装任何构建工具。
+#
+# 触发方式：
+#   1. 打 tag 时自动构建并发布 Release（推荐）
+#   2. 在 Actions 页面手动点 "Run workflow"
+#
+# 产物：dist/AI数字人.exe（轻量启动器，几 MB）
+#
+# 说明：只打包「启动器」而不是整个程序。因为 torch 有 2.7GB，
+# 把整个应用塞进 exe 会得到一个巨大且脆弱的文件。启动器负责
+# 检查环境、装依赖、下模型，然后拉起数字人窗口。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装打包工具
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+
+      - name: 打包启动器
+        run: |
+          pyinstaller --onefile --noconsole `
+            --name "AI数字人" `
+            --add-data "start.bat;." `
+            --add-data "install.bat;." `
+            launcher.py
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI数字人-windows
+          path: dist/AI数字人.exe
+
+      - name: 发布 Release（仅打 tag 时）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AI数字人.exe
+          generate_release_notes: true
+          body: |
+            ## AI 数字人 — Windows 启动器
+
+            ### 使用方法
+            1. 下载 `AI数字人.exe`，放到 `D:\AI\` 目录下
+            2. 双击运行
+
+            ### 首次运行
+            首次启动会自动检查环境、安装依赖（需要联网，约 10 分钟）。
+            请在 `.env` 里填好你的 StepFun API Key。
+
+            ### 环境要求
+            - Windows 10/11 64 位
+            - NVIDIA 显卡（6GB 显存以上）
+            - Python 3.12
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

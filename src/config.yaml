@@ -1,0 +1,37 @@
+###############################################################################
+#  LiveTalking Configuration — 云端版 (StepFun 语音 + 大模型)
+#  CLI arguments override values in this file
+###############################################################################
+
+# -------- Audio ----------------------------------------------------------
+l: 10
+m: 8
+r: 10
+
+# -------- Avatar Model ----------------------------------------------------------
+model: wav2lip                 # musetalk / wav2lip / ultralight
+avatar_id: wav2lip256_522
+batch_size: 16
+
+# -------- Custom Actions ----------------------------------------------------------
+customvideo_config: ''
+
+# -------- TTS (阶跃星辰云端) ---------------------------------------------
+tts: stepfun                   # 云端合成，见 tts/stepfun.py
+REF_FILE: 'cixingnansheng'     # 音色 ID：官方音色或复刻音色 voice-xxx
+REF_TEXT: ''                   # 复刻音色时填参考音频的文字（复刻流程里用）
+TTS_SERVER: ''
+stepfun_sample_rate: 16000     # 口型模型要 16k，直接让云端产出
+stepfun_format: wav
+
+# -------- LLM (阶跃星辰云端) ---------------------------------------------
+llm_provider: stepfun          # dashscope / orcarouter / stepfun
+llm_model: ''                  # 留空用 provider 默认（step-3.7-flash）
+llm_system_prompt: ''          # 留空用 LLM_SYSTEM_PROMPT 环境变量
+
+# -------- Transport ----------------------------------------------------------
+transport: webrtc              # rtcpush / webrtc / rtmp / virtualcam
+stun: 'stun:stun.l.google.com:19302'   # 不能传空字符串
+push_url: ''                   # push URL for rtcpush/rtmp (not needed for webrtc/virtualcam)
+max_session: 5                 # max concurrent sessions
+listenport: 8010

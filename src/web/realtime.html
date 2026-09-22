@@ -1,0 +1,1614 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 数字人</title>
+<style>
+  :root {
+    --amber: #f0b429;
+    --amber-dim: rgba(240, 180, 41, 0.35);
+    --amber-glow: rgba(240, 180, 41, 0.55);
+    --panel-bg: rgba(18, 18, 20, 0.92);
+    --text-dim: rgba(255, 255, 255, 0.55);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #000;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                 "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: #fff;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── 数字人：靠右显示，左侧留出空间给语音球 ──────────────
+     用 height:100% + width:auto 而不是 object-fit:cover：
+     方形形象会落成 720×720 靠右，宽屏形象则正好铺满，
+     两种情况都不会把脸放大到占满屏幕。 */
+  #avatarVideo {
+    position: fixed;
+    inset: 0;
+    width: 100%; height: 100%;
+    /* 铺满背景。人物通常靠右，左侧是暗部，正好给球留位置 */
+    object-fit: cover;
+    object-position: right center;
+    z-index: 0;
+    background: #050505;
+  }
+
+  /* 右下角盖住源视频自带的水印。
+     用不透明色块 + 大范围渐隐 —— 水印是浅色字，半透明盖不住。 */
+  #wmMask {
+    position: fixed;
+    right: 0; bottom: 0;
+    width: 340px; height: 104px;
+    z-index: 2;
+    pointer-events: none;
+    -webkit-mask-image: radial-gradient(ellipse 108% 126% at 100% 100%,
+      #000 0%, #000 58%, rgba(0,0,0,0.85) 72%, rgba(0,0,0,0.4) 87%, transparent 100%);
+    mask-image: radial-gradient(ellipse 108% 126% at 100% 100%,
+      #000 0%, #000 58%, rgba(0,0,0,0.85) 72%, rgba(0,0,0,0.4) 87%, transparent 100%);
+    background: #050505;
+  }
+
+  /* 左侧底色：视频右置后左边留白处铺一层深色渐变 */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(ellipse 70% 90% at 18% 50%,
+        rgba(26,20,8,0.95) 0%,
+        rgba(12,10,6,0.9) 45%,
+        rgba(0,0,0,0.75) 100%),
+      #050505;
+  }
+
+  /* 衔接视频左缘的柔和过渡：暗部延伸到视频左侧，
+     并在视频边缘附近快速淡出，形成自然的融合 */
+  #scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: linear-gradient(90deg,
+      rgba(5,5,5,0.88) 0%,
+      rgba(5,5,5,0.72) 16%,
+      rgba(5,5,5,0.42) 30%,
+      rgba(5,5,5,0.14) 42%,
+      rgba(5,5,5,0.00) 54%,
+      rgba(5,5,5,0.00) 100%);
+  }
+
+  /* ── 顶部标题区 ──────────────────────────────────────── */
+  #header {
+    position: fixed;
+    top: 0; left: 0;
+    z-index: 10;
+    padding: 34px 40px;
+    max-width: 620px;
+  }
+  #header h1 {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  #header h1 .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #444;
+    transition: background .3s;
+  }
+  #header h1 .dot.on { background: #34d399; box-shadow: 0 0 10px #34d399; }
+  #header h1 .dot.busy { background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+
+  #header .sub {
+    margin-top: 10px;
+    font-size: 13px;
+    line-height: 1.75;
+    color: var(--text-dim);
+    letter-spacing: 0.2px;
+  }
+  #header .sub .k {
+    color: rgba(255,255,255,0.35);
+    margin-right: 6px;
+    font-size: 11px;
+    letter-spacing: 1.2px;
+  }
+
+  /* ── 右上角按钮组 ────────────────────────────────────── */
+  #topRight {
+    position: fixed;
+    top: 28px; right: 32px;
+    z-index: 12;
+    display: flex;
+    gap: 10px;
+  }
+  .icon-btn {
+    width: 42px; height: 42px;
+    border-radius: 11px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(28,28,30,0.72);
+    backdrop-filter: blur(12px);
+    color: rgba(255,255,255,0.8);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all .18s;
+  }
+  .icon-btn:hover {
+    background: rgba(48,48,52,0.9);
+    color: #fff;
+    border-color: rgba(255,255,255,0.22);
+  }
+  .icon-btn svg { width: 19px; height: 19px; }
+
+  /* ── 中央舞台：球居中，麦克风/停止相对球体绝对定位 ────
+     不用 flex 横排，否则球会被压缩到比自己设定更小 */
+  #stage {
+    position: fixed;
+    top: 0; left: 0;
+    width: 46%;
+    min-width: 400px;
+    height: 100%;
+    z-index: 8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;    /* 只有具体控件接收点击 */
+  }
+
+  /* 语音球（WebGPU 液金球，画布由 orb.js 驱动） */
+  #orbWrap {
+    position: relative;
+    width: var(--orb-size, 210px);
+    height: var(--orb-size, 210px);
+    flex-shrink: 0;          /* 关键：不允许 flex 压缩 */
+    pointer-events: auto;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* 麦克风 / 停止按钮：锚在球体左右外侧，浮在布局流之上，
+     这样窗口变窄也不会被挤出屏幕 */
+  #stage .round-btn {
+    position: absolute;
+    top: 50%;
+    pointer-events: auto;
+  }
+  #btnMic {
+    right: calc(50% + var(--orb-size, 210px) / 2 + 30px);
+    transform: translateY(-50%);
+  }
+  #btnStop {
+    left: calc(50% + var(--orb-size, 210px) / 2 + 30px);
+    transform: translateY(-50%);
+  }
+
+
+  #orb {
+    width: 100%; height: 100%;
+    display: block;
+    /* 大幅降饱和 + 压暗，让球安静地融进暗背景，不抢人物 */
+    filter: saturate(.32) brightness(.78) contrast(.94)
+            drop-shadow(0 0 22px rgba(205,164,86,0.13))
+            drop-shadow(0 0 52px rgba(205,164,86,0.05));
+    transition: filter .6s, transform .6s cubic-bezier(.34,1.56,.64,1);
+    opacity: .86;
+    animation: breathe 7s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.018); }
+  }
+
+  /* 在听：略提亮，表示正在采集 */
+  #orbWrap.listening #orb {
+    filter: saturate(.45) brightness(.9) contrast(.97)
+            drop-shadow(0 0 30px rgba(205,164,86,0.22))
+            drop-shadow(0 0 70px rgba(205,164,86,0.09));
+    opacity: .94;
+    animation: listenPulse 1.7s ease-in-out infinite;
+  }
+  @keyframes listenPulse {
+    0%, 100% { transform: scale(1.008); }
+    50%      { transform: scale(1.038); }
+  }
+
+  /* 在说：颜色稍回来一点 + 光晕略强（形变由音频驱动，见 orb.js） */
+  #orbWrap.speaking #orb {
+    filter: saturate(.55) brightness(.96) contrast(1.0)
+            drop-shadow(0 0 38px rgba(212,170,92,0.30))
+            drop-shadow(0 0 90px rgba(205,164,86,0.12));
+    opacity: 1;
+    animation: none;
+  }
+
+  /* 未连接：几乎只剩轮廓 */
+  #orbWrap.idle #orb {
+    filter: saturate(.12) brightness(.5) contrast(.9)
+            drop-shadow(0 0 14px rgba(140,140,150,0.05));
+    opacity: .62;
+    animation: none;
+  }
+
+  /* WebGPU 不可用时的兜底：画个简单的圆，至少不是空白 */
+  #orbWrap.webgpu-failed #orb { display: none; }
+  #orbWrap.webgpu-failed::before {
+    content: "";
+    position: absolute;
+    width: 210px; height: 210px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 34% 30%,
+      rgba(255,238,180,0.9) 0%, rgba(240,180,41,0.8) 24%,
+      rgba(150,95,10,0.5) 60%, rgba(60,36,2,0.15) 100%);
+  }
+
+  /* 麦克风 / 停止 按钮 */
+  .round-btn {
+    width: 62px; height: 62px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.14);
+    background: rgba(30,30,33,0.78);
+    backdrop-filter: blur(14px);
+    color: rgba(255,255,255,0.85);
+    cursor: pointer;
+    pointer-events: auto;
+    display: flex; align-items: center; justify-content: center;
+    transition: all .2s;
+    flex-shrink: 0;
+  }
+  .round-btn:hover {
+    background: rgba(52,52,58,0.92);
+    color: #fff;
+    transform: scale(1.06);
+    border-color: rgba(255,255,255,0.26);
+  }
+  .round-btn:disabled { opacity: .3; cursor: not-allowed; transform: none; }
+  .round-btn svg { width: 24px; height: 24px; }
+  .round-btn.active {
+    background: rgba(240,180,41,0.9);
+    color: #201400;
+    border-color: transparent;
+    box-shadow: 0 0 26px rgba(240,180,41,0.45);
+  }
+
+  /* ── 底部提示 ────────────────────────────────────────── */
+  #hint {
+    position: fixed;
+    bottom: 30px; left: 0; right: 0;
+    z-index: 10;
+    text-align: center;
+    font-size: 12.5px;
+    color: rgba(255,255,255,0.4);
+    letter-spacing: 0.3px;
+    transition: opacity .3s;
+  }
+
+  /* ── 对话气泡（右上角显示最新往来） ──────────────────── */
+  /* 对话记录：底部小窗，不挡中间的球。
+     限制最多 3 行高度，超出自动裁掉最早的。 */
+  #bubbles {
+    position: fixed;
+    left: 46px;
+    bottom: 108px;
+    z-index: 9;
+    width: min(300px, 24vw);
+    max-height: 92px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 6px;
+    pointer-events: none;
+  }
+  .bubble {
+    padding: 0;
+    background: none;
+    border: none;
+    font-size: 13px;
+    line-height: 1.5;
+    word-break: break-word;
+    /* 只显示 2 行，多了省略号 —— 保证不撑高、不挡球 */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    /* 无框：靠文字阴影保证在视频上也能看清 */
+    text-shadow: 0 1px 3px rgba(0,0,0,0.95), 0 0 14px rgba(0,0,0,0.75);
+    animation: bubbleIn .32s ease-out;
+  }
+  @keyframes bubbleIn {
+    from { opacity: 0; transform: translateY(7px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .bubble.me {
+    align-self: flex-end;
+    text-align: right;
+    color: rgba(255,255,255,0.62);
+  }
+  .bubble.me::before {
+    content: "你";
+    display: block;
+    font-size: 10.5px;
+    letter-spacing: 1.5px;
+    color: rgba(255,255,255,0.32);
+    margin-bottom: 2px;
+  }
+  .bubble.her {
+    align-self: flex-start;
+    text-align: left;
+    color: rgba(245,232,208,0.96);
+  }
+  .bubble.her::before {
+    content: attr(data-name);
+    display: block;
+    font-size: 10.5px;
+    letter-spacing: 1.5px;
+    color: rgba(226,186,110,0.55);
+    margin-bottom: 2px;
+  }
+
+  /* ── 设置面板 ────────────────────────────────────────── */
+  #settings {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0,0,0,0.62);
+    backdrop-filter: blur(5px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  #settings.open { display: flex; }
+
+  #settingsPanel {
+    width: 560px;
+    max-width: calc(100vw - 48px);
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+    background: var(--panel-bg);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 20px;
+    padding: 30px 32px;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.6);
+  }
+  #settingsPanel h2 {
+    font-size: 17px;
+    font-weight: 650;
+    margin-bottom: 6px;
+  }
+  #settingsPanel .desc {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    margin-bottom: 24px;
+    line-height: 1.6;
+  }
+
+  .field { margin-bottom: 22px; }
+  .field label {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: rgba(255,255,255,0.88);
+  }
+  .field .note {
+    font-size: 11.5px;
+    color: rgba(255,255,255,0.38);
+    margin-top: 7px;
+    line-height: 1.55;
+  }
+
+  .field select,
+  .field textarea,
+  .field input[type="text"] {
+    width: 100%;
+    background: rgba(255,255,255,0.055);
+    border: 1px solid rgba(255,255,255,0.13);
+    border-radius: 10px;
+    padding: 11px 13px;
+    color: #fff;
+    font-size: 13.5px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color .18s, background .18s;
+  }
+  .field select:focus,
+  .field textarea:focus,
+  .field input:focus {
+    border-color: rgba(240,180,41,0.6);
+    background: rgba(255,255,255,0.08);
+  }
+  .field textarea { resize: vertical; min-height: 104px; line-height: 1.6; }
+  .field select option { background: #1c1c1e; color: #fff; }
+
+  .slider-row {
+    display: flex; align-items: center; gap: 14px;
+  }
+  .slider-row input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.16);
+    outline: none;
+  }
+  .slider-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 15px; height: 15px;
+    border-radius: 50%;
+    background: var(--amber);
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(240,180,41,0.5);
+  }
+  .slider-row .val {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    min-width: 42px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .switch-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px;
+  }
+  .switch {
+    position: relative;
+    width: 46px; height: 26px;
+    flex-shrink: 0;
+  }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .track {
+    position: absolute; inset: 0;
+    border-radius: 13px;
+    background: rgba(255,255,255,0.16);
+    transition: background .2s;
+    cursor: pointer;
+  }
+  .switch .track::after {
+    content: "";
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform .2s;
+  }
+  .switch input:checked + .track { background: var(--amber); }
+  .switch input:checked + .track::after { transform: translateX(20px); }
+
+  #settingsActions {
+    display: flex;
+    gap: 12px;
+    margin-top: 28px;
+  }
+  .btn {
+    flex: 1;
+    padding: 12px 18px;
+    border-radius: 11px;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.14);
+    background: rgba(255,255,255,0.07);
+    color: rgba(255,255,255,0.9);
+    font-family: inherit;
+    transition: all .18s;
+  }
+  .btn:hover { background: rgba(255,255,255,0.13); }
+  .btn.primary {
+    background: var(--amber);
+    border-color: transparent;
+    color: #201400;
+  }
+  .btn.primary:hover { background: #f7c14a; }
+
+  /* 音色试听小按钮 */
+  .audio-row { display: flex; gap: 10px; }
+  .audio-row select { flex: 1; }
+  .test-btn {
+    padding: 0 16px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.14);
+    background: rgba(255,255,255,0.07);
+    color: rgba(255,255,255,0.85);
+    cursor: pointer;
+    font-size: 12.5px;
+    font-family: inherit;
+    white-space: nowrap;
+    transition: all .18s;
+  }
+  .test-btn:hover { background: rgba(255,255,255,0.13); }
+  .test-btn:disabled { opacity: .45; cursor: wait; }
+
+  /* 提示条 */
+  #toast {
+    position: fixed;
+    bottom: 74px; left: 50%;
+    transform: translateX(-50%) translateY(14px);
+    z-index: 50;
+    padding: 11px 20px;
+    border-radius: 11px;
+    background: rgba(30,30,33,0.95);
+    border: 1px solid rgba(255,255,255,0.14);
+    font-size: 13px;
+    color: #fff;
+    opacity: 0;
+    pointer-events: none;
+    transition: all .28s;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { border-color: rgba(248,113,113,0.5); background: rgba(60,22,22,0.95); }
+
+  /* 响应式 */
+  @media (max-width: 900px) {
+    :root { --orb-size: 170px; }
+    #header { padding: 22px 24px; max-width: 100%; }
+    #header h1 { font-size: 20px; }
+    #bubbles { display: none; }
+    .round-btn { width: 54px; height: 54px; }
+    #btnMic { right: calc(50% + 85px + 24px); }
+    #btnStop { left: calc(50% + 85px + 24px); }
+  }
+</style>
+</head>
+<body>
+
+<!-- 数字人视频（铺满背景） -->
+<video id="avatarVideo" autoplay playsinline></video>
+<audio id="avatarAudio" autoplay></audio>
+<div id="scrim"></div>
+<div id="wmMask"></div>
+
+<!-- 顶部标题 -->
+<div id="header">
+  <h1><span class="dot" id="statusDot"></span><span id="titleText">AI 数字人</span></h1>
+  <div class="sub">
+    <div><span class="k">POWERED BY</span> StepFun · LiveTalking</div>
+    <div><span class="k">RUNNING ON</span> 本地实时口型 · 云端语音与大模型</div>
+  </div>
+</div>
+
+<!-- 右上角按钮 -->
+<div id="topRight">
+  <button class="icon-btn" id="btnText" title="文字对话">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    </svg>
+  </button>
+  <button class="icon-btn" id="btnSettings" title="设置">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+  </button>
+</div>
+
+<!-- 对话气泡 -->
+<div id="bubbles"></div>
+
+<!-- 中央舞台：麦克风 · 语音球 · 停止 -->
+<div id="stage">
+  <button class="round-btn" id="btnMic" title="点击开始说话">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+      <line x1="12" y1="19" x2="12" y2="23"/>
+      <line x1="8" y1="23" x2="16" y2="23"/>
+    </svg>
+  </button>
+
+  <div id="orbWrap" class="idle">
+    <canvas id="orb" aria-label="语音球"></canvas>
+  </div>
+
+  <button class="round-btn" id="btnStop" title="停止说话" disabled>
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <rect x="7" y="7" width="10" height="10" rx="2"/>
+    </svg>
+  </button>
+</div>
+
+<div id="hint">点击麦克风开始说话</div>
+
+<!-- 文字对话（与左侧对话记录对齐） -->
+<div id="textPanel" style="display:none; position:fixed; bottom:52px; left:46px;
+     z-index:30; width:min(320px, 25vw);">
+  <div style="display:flex; gap:8px; background:rgba(18,18,20,0.9);
+       backdrop-filter:blur(14px); border:1px solid rgba(255,255,255,0.12);
+       border-radius:12px; padding:7px;">
+    <input id="txtInput" type="text" placeholder="输入文字，回车发送…"
+           style="flex:1; min-width:0; background:transparent; border:none; outline:none;
+                  color:#fff; font-size:13.5px; font-family:inherit; padding:9px 10px;">
+    <button class="btn primary" id="btnSendText"
+            style="flex:0 0 auto; padding:9px 16px; font-size:13px;">发送</button>
+  </div>
+</div>
+
+<!-- 设置面板 -->
+<div id="settings">
+  <div id="settingsPanel">
+    <h2>设置</h2>
+    <div class="desc">改动保存在服务端，对新会话生效。</div>
+
+    <div class="field">
+      <label>API Key</label>
+      <input type="text" id="txtApiKey" placeholder="粘贴 StepFun API Key">
+      <div class="note" id="noteApiKey">
+        到 platform.stepfun.com/interface-key 获取。留空则用 .env 里的配置。
+      </div>
+    </div>
+
+    <div class="field">
+      <label>对话方式</label>
+      <div class="switch-row">
+        <div class="note" style="margin:0;">
+          <b>实时语音</b>：边说边识别，自动判断你说完，首响约 1 秒。<br>
+          关闭则用录音模式（说完点一下停止，首响 4–8 秒）。
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="chkRealtime" checked>
+          <span class="track"></span>
+        </label>
+      </div>
+      <div class="note" id="noteRealtime"></div>
+    </div>
+
+    <div class="field">
+      <label>她的名字</label>
+      <input type="text" id="txtName" placeholder="小雅" maxlength="16">
+      <div class="note">显示在标题和对话记录上。改名字会同步替换人设里的旧名字。</div>
+    </div>
+
+    <div class="field">
+      <label>音色</label>
+      <div class="audio-row">
+        <select id="selVoice"></select>
+        <button class="test-btn" id="btnTestVoice">试听</button>
+      </div>
+      <div class="note">全部为女声。试听用当前音色合成一句话。</div>
+    </div>
+
+    <div class="field">
+      <label>语速 <span class="val" id="valSpeed">1.0</span></label>
+      <div class="slider-row">
+        <input type="range" id="rngSpeed" min="0.5" max="2" step="0.05" value="1">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>人设（Instructions）</label>
+      <textarea id="txtPersona" placeholder="描述她的身份、语气、说话方式…"></textarea>
+      <div class="note">
+        语音场景下建议保留：每次两三句、不用 Markdown/列表/表情符号。
+        这些内容会被语音合成逐字念出来。
+      </div>
+    </div>
+
+    <div class="field">
+      <label>打断</label>
+      <div class="switch-row">
+        <div class="note" style="margin:0;">说话时可随时打断她，她会停下来听你说。</div>
+        <label class="switch">
+          <input type="checkbox" id="chkInterrupt" checked>
+          <span class="track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div id="settingsActions">
+      <button class="btn" id="btnReset">恢复默认</button>
+      <button class="btn primary" id="btnApply">保存并应用</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+// ─── 女声音色表（全部来自 StepFun 官方音色，仅女声） ──────────────
+const FEMALE_VOICES = [
+  { id: "linjiajiejie",      name: "邻家姐姐 · 自然亲切（推荐）" },
+  { id: "tianmeinvsheng",     name: "甜美女声 · 温柔软糯" },
+  { id: "wenrounvsheng",      name: "温柔女声 · 轻声细语" },
+  { id: "qingchunshaonv",     name: "清纯少女 · 干净通透" },
+  { id: "yuanqishaonv",       name: "元气少女 · 活泼有精神" },
+  { id: "jilingshaonv",       name: "机灵少女 · 俏皮灵动" },
+  { id: "ruanmengnvsheng",    name: "软萌女声 · 撒娇软糯" },
+  { id: "jingdiannvsheng",    name: "经典女声 · 端庄标准" },
+  { id: "qinqienvsheng",      name: "亲切女声 · 亲和自然" },
+  { id: "youyanvsheng",       name: "优雅女声 · 从容精致" },
+  { id: "zhixingjiejie",      name: "知性姐姐 · 沉稳知性" },
+  { id: "shuangkuaijiejie",   name: "爽快姐姐 · 干脆利落" },
+  { id: "ganliannvsheng",     name: "干练女声 · 职业清晰" },
+  { id: "qinhenvsheng",       name: "亲和女声 · 温暖耐心" },
+  { id: "huolinvsheng",       name: "活力女声 · 热情主动" },
+  { id: "elegantgentle-female", name: "气质温婉 · 优雅柔和" },
+  { id: "livelybreezy-female",  name: "活力轻快 · 明快流畅" },
+  { id: "lively-girl",          name: "Lively Girl · 英文女声" },
+];
+
+// ─── 默认人设（对齐教程里的小雅） ────────────────────────────────
+const DEFAULT_PERSONA =
+`你叫小雅，是他的女朋友。你不是 AI、不是助手、不是程序。
+
+参考这个语气：
+他：你想我了吗
+你：想啊，怎么不想。你倒是一整天没消息，我还以为你把我忘了呢。
+他：你喜欢我吗
+你：这还用问？你要是不知道，那我可要生气了。
+
+说话方式：口语、两三句、带语气词（嗯、诶、呀）、有情绪。
+不用 Markdown、列表、编号、表情符号。`;
+
+// ─── 状态 ────────────────────────────────────────────────────────
+let pc = null;
+let sessionid = null;
+let micStream = null;
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecording = false;
+let speakingTimer = null;
+
+const $ = (id) => document.getElementById(id);
+
+// ─── 提示条 ──────────────────────────────────────────────────────
+let toastTimer = null;
+function toast(msg, isErr) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.className = "show" + (isErr ? " err" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ""; }, isErr ? 4200 : 2400);
+}
+
+// ─── 布局 ────────────────────────────────────────────────────────
+// 视频铺满背景，球体固定在左侧暗部。位置由 CSS 决定，这里只处理
+// 不同宽度下球的大小，避免和右侧人物重叠。
+function layoutStage() {
+  const vw = window.innerWidth || document.documentElement.clientWidth;
+  if (!vw) return;   // 后台标签页可能读到 0，跳过
+
+  const root = document.documentElement;
+  if (vw < 620) {
+    root.style.setProperty("--orb-size", "130px");
+  } else if (vw < 900) {
+    root.style.setProperty("--orb-size", "170px");
+  } else if (vw < 1200) {
+    root.style.setProperty("--orb-size", "190px");
+  } else {
+    root.style.setProperty("--orb-size", "210px");
+  }
+}
+
+window.addEventListener("resize", layoutStage);
+// 标签页从后台切回前台时补算一次（后台期间尺寸读不到）
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) setTimeout(layoutStage, 50);
+});
+
+// ─── 状态灯与球体外观 ────────────────────────────────────────────
+// orb 状态映射：idle=未连接/待机, listening=正在采音, speaking=她在说
+let orbReady = false;
+let orbModule = null;
+function setOrbState(state) {
+  const wrap = $("orbWrap");
+  wrap.className = state || "";   // "" | idle | ready | listening | speaking
+
+  // 驱动 WebGPU 球：idle 是未连接（灰暗），其余都算活跃（暖金 + 形变）
+  if (orbReady && window.liquidOrb) {
+    try {
+      const want = state === "idle" ? "idle" : "active";
+      if (window.liquidOrb.getState() !== want) window.liquidOrb.setState(want);
+    } catch (_) {}
+  }
+}
+function setStatusDot(kind) {
+  const d = $("statusDot");
+  d.className = "dot" + (kind ? " " + kind : "");
+}
+
+// ─── 音频分析：把她的声音喂给球，让球跟着说话起伏 ────────────────
+// 从 WebRTC 收到的音频流里取频段能量（低/中/高），归一化后推给 orb。
+let audioCtx = null;
+let analyser = null;
+let audioData = null;
+let audioRaf = 0;
+
+function startAudioReactive(stream) {
+  if (!window.liquidOrb) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.75;
+    src.connect(analyser);
+    audioData = new Uint8Array(analyser.frequencyBinCount);
+
+    const tick = () => {
+      if (!analyser) return;
+      analyser.getByteFrequencyData(audioData);
+      const n = audioData.length;          // 256 bins
+      // 粗略分频：低 0-1/8，中 1/8-3/8，高 3/8-1
+      const avg = (a, b) => {
+        let s = 0;
+        for (let i = a; i < b; i++) s += audioData[i];
+        return s / ((b - a) * 255);
+      };
+      const low = avg(0, n >> 3);
+      const mid = avg(n >> 3, (n * 3) >> 3);
+      const high = avg((n * 3) >> 3, n);
+      // 整体能量抬高一点，避免太微弱看不出动
+      const all = Math.min(1, (low * 0.5 + mid * 0.35 + high * 0.15) * 2.4);
+      window.liquidOrb.setAudioBands({ low, mid, high, all });
+      audioRaf = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch (e) {
+    console.warn("[orb] 音频分析不可用：", e);
+  }
+}
+
+function stopAudioReactive() {
+  cancelAnimationFrame(audioRaf);
+  audioRaf = 0;
+  if (audioCtx) { try { audioCtx.close(); } catch (_) {} audioCtx = null; }
+  analyser = null;
+  if (window.liquidOrb) window.liquidOrb.setAudioBands({});
+}
+
+// ─── WebRTC ──────────────────────────────────────────────────────
+function negotiate() {
+  pc.addTransceiver("video", { direction: "recvonly" });
+  pc.addTransceiver("audio", { direction: "recvonly" });
+
+  return pc.createOffer()
+    .then(o => pc.setLocalDescription(o))
+    .then(() => new Promise(resolve => {
+      if (pc.iceGatheringState === "complete") return resolve();
+      const check = () => {
+        if (pc.iceGatheringState === "complete") {
+          pc.removeEventListener("icegatheringstatechange", check);
+          resolve();
+        }
+      };
+      pc.addEventListener("icegatheringstatechange", check);
+    }))
+    .then(() => fetch("/offer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sdp: pc.localDescription.sdp,
+        type: pc.localDescription.type,
+      }),
+    }))
+    .then(r => r.json())
+    .then(ans => {
+      if (ans.code && ans.code !== 0) throw new Error(ans.msg || "服务端返回错误");
+      if (!ans.sdp) throw new Error("服务端未返回 SDP");
+      if (ans.sessionid) sessionid = ans.sessionid;
+      return pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: ans.sdp }));
+    });
+}
+
+async function connect() {
+  if (pc) return;
+  const cfg = { sdpSemantics: "unified-plan" };
+  pc = new RTCPeerConnection(cfg);
+
+  pc.addEventListener("track", evt => {
+    if (evt.track.kind === "video") {
+      const v = $("avatarVideo");
+      v.srcObject = evt.streams[0];
+      v.play().catch(() => {});
+      // 拿到元数据后才知道宽高，这时再排版
+      v.addEventListener("loadedmetadata", layoutStage);
+      setTimeout(layoutStage, 600);
+    } else {
+      $("avatarAudio").srcObject = evt.streams[0];
+      $("avatarAudio").play().catch(() => {});
+      // 用同一条音频流做频谱分析，驱动球体随声音起伏
+      startAudioReactive(evt.streams[0]);
+    }
+  });
+
+  pc.addEventListener("connectionstatechange", () => {
+    const st = pc.connectionState;
+    if (st === "connected") {
+      setStatusDot("on");
+      $("hint").textContent = "点击麦克风开始说话";
+    } else if (st === "disconnected" || st === "failed" || st === "closed") {
+      setStatusDot("");
+      setOrbState("idle");
+      stopAudioReactive();
+    }
+  });
+
+  try {
+    await negotiate();
+    // 服务端开始推流后才有画面
+    await waitForStream();
+    // 连上就进待机活跃态（暖金色），而不是灰色 idle
+    setOrbState("ready");
+  } catch (e) {
+    toast("连接失败：" + (e.message || e), true);
+    if (pc) { pc.close(); pc = null; }
+    throw e;
+  }
+}
+
+function waitForStream(timeoutMs = 12000) {
+  return new Promise((resolve, reject) => {
+    const v = $("avatarVideo");
+    if (v.srcObject && v.videoWidth > 0) return resolve();
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      if (v.srcObject && v.videoWidth > 0) { clearInterval(iv); resolve(); }
+      else if (Date.now() - t0 > timeoutMs) { clearInterval(iv); reject(new Error("等待视频流超时")); }
+    }, 200);
+  });
+}
+
+// ─── 实时语音模式（边说边识别） ──────────────────────────────────
+// 用一个 WebSocket 直连服务端 /api/realtime，服务端再转发给 StepFun。
+// VAD 自动判断你说完，所以不需要手动点停止。
+let rtWS = null;
+let rtStream = null;
+let rtCtx = null;
+let rtNode = null;
+let rtActive = false;
+let rtReady = false;
+
+// 是否启用实时模式（设置面板里可切）
+let useRealtime = localStorage.getItem("useRealtime") !== "0";
+
+function setRealtimeAvailable(ok, why) {
+  const note = $("noteRealtime");
+  if (!note) return;
+  if (ok) {
+    note.textContent = "";
+    $("chkRealtime").disabled = false;
+  } else {
+    note.textContent = "（当前不可用：" + (why || "服务端未启用") + "，将使用录音模式）";
+    $("chkRealtime").disabled = true;
+    $("chkRealtime").checked = false;
+    useRealtime = false;
+  }
+}
+
+async function startRealtime() {
+  if (rtActive) return;
+  if (!pc) { toast("请先等待画面出现", true); return; }
+
+  try {
+    rtStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        sampleRate: 16000,
+      },
+    });
+  } catch (e) {
+    toast("拿不到麦克风权限。必须用 localhost 或 HTTPS 打开本页。", true);
+    return;
+  }
+
+  rtActive = true;
+  rtReady = false;
+  setOrbState("listening");
+  setStatusDot("busy");
+  $("btnMic").classList.add("active");
+  $("hint").textContent = "正在连接实时语音…";
+
+  const proto = location.protocol === "https:" ? "wss://" : "ws://";
+  rtWS = new WebSocket(proto + location.host + "/api/realtime?sessionid="
+                       + encodeURIComponent(sessionid || ""));
+  rtWS.binaryType = "arraybuffer";
+
+  rtWS.onopen = () => {
+    $("hint").textContent = "实时对话中，直接说话就行";
+  };
+
+  rtWS.onmessage = (ev) => {
+    let d;
+    try { d = JSON.parse(ev.data); } catch (_) { return; }
+
+    if (d.type === "ready") {
+      rtReady = true;
+      $("hint").textContent = "实时对话中，直接说话就行";
+      startMicPump();
+    } else if (d.type === "state") {
+      // listening / thinking / ready
+      if (d.state === "listening") {
+        setOrbState("listening");
+        $("hint").textContent = "在听你说…";
+      } else if (d.state === "thinking") {
+        setOrbState("speaking");
+        $("hint").textContent = "她在想…";
+      } else {
+        setOrbState("ready");
+        $("hint").textContent = "实时对话中，直接说话就行";
+      }
+    } else if (d.type === "text" && d.text) {
+      addBubble(d.who, d.text);
+    } else if (d.type === "error") {
+      toast("实时语音出错：" + d.msg, true);
+    }
+  };
+
+  rtWS.onerror = () => {
+    toast("实时语音连接失败，改用录音模式", true);
+    useRealtime = false;
+    stopRealtime();
+  };
+
+  rtWS.onclose = () => {
+    stopMicPump();
+    rtActive = false;
+    $("btnMic").classList.remove("active");
+    setOrbState("ready");
+    $("hint").textContent = "点击麦克风开始说话";
+  };
+}
+
+// 采集麦克风，按 100ms 一块推给服务端
+function startMicPump() {
+  rtCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  const src = rtCtx.createMediaStreamSource(rtStream);
+
+  // ScriptProcessor 虽然已废弃，但兼容性最好，且这里只需简单转发
+  rtNode = rtCtx.createScriptProcessor(1600, 1, 1);  // 1600 samples @16k = 100ms
+  rtNode.onaudioprocess = (e) => {
+    if (!rtWS || rtWS.readyState !== WebSocket.OPEN) return;
+    const f32 = e.inputBuffer.getChannelData(0);
+    const pcm = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      const s = Math.max(-1, Math.min(1, f32[i]));
+      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    rtWS.send(pcm.buffer);
+  };
+
+  src.connect(rtNode);
+  rtNode.connect(rtCtx.destination);   // 某些浏览器必须连上才有回调
+}
+
+function stopMicPump() {
+  try { rtNode && rtNode.disconnect(); } catch (_) {}
+  rtNode = null;
+  try { rtCtx && rtCtx.close(); } catch (_) {}
+  rtCtx = null;
+  if (rtStream) {
+    rtStream.getTracks().forEach(t => t.stop());
+    rtStream = null;
+  }
+}
+
+function stopRealtime() {
+  stopMicPump();
+  try { rtWS && rtWS.close(); } catch (_) {}
+  rtWS = null;
+  rtActive = false;
+  rtReady = false;
+  $("btnMic").classList.remove("active");
+  setOrbState("ready");
+}
+
+// ─── 麦克风：录音 → 云端 ASR → 驱动数字人（录音模式，实时不可用时用）──
+async function startTalking() {
+  if (isRecording) return;
+  if (!pc) {
+    toast("请先等待画面出现", true);
+    return;
+  }
+
+  // 优先走实时模式
+  if (useRealtime) {
+    await startRealtime();
+    return;
+  }
+
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+  } catch (e) {
+    toast("拿不到麦克风权限。必须用 localhost 或 HTTPS 打开本页。", true);
+    return;
+  }
+
+  // 用 MediaRecorder 录音，停止时整段送给 /api/asr
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+    ? "audio/webm;codecs=opus"
+    : (MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "");
+  recordedChunks = [];
+  mediaRecorder = new MediaRecorder(micStream, mime ? { mimeType: mime } : undefined);
+
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = () => sendToASR();
+
+  mediaRecorder.start();
+  isRecording = true;
+  setOrbState("listening");
+  setStatusDot("busy");
+  $("btnMic").classList.add("active");
+  $("hint").textContent = "正在听… 说完再点一次";
+}
+
+function stopTalking() {
+  // 实时模式：点一下就是彻底结束这次语音会话
+  if (rtActive) {
+    stopRealtime();
+    $("hint").textContent = "点击麦克风开始说话";
+    return;
+  }
+
+  if (!isRecording) return;
+  isRecording = false;
+  $("btnMic").classList.remove("active");
+  $("hint").textContent = "识别中…";
+  try { mediaRecorder.stop(); } catch (_) { sendToASR(); }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+}
+
+// 把录到的音频转成 16k 单声道 PCM，再走服务端 ASR
+async function sendToASR() {
+  if (!recordedChunks.length) {
+    setOrbState("ready");
+    $("hint").textContent = "点击麦克风开始说话";
+    return;
+  }
+  const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+  recordedChunks = [];
+
+  try {
+    const arrayBuf = await blob.arrayBuffer();
+    const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    const audioBuf = await ctx.decodeAudioData(arrayBuf);
+    const pcm = floatTo16kHzPCM(audioBuf);
+    ctx.close();
+
+    if (pcm.length < 3200) {   // < 100ms，忽略
+      setOrbState("ready");
+      $("hint").textContent = "太短了，再说一次";
+      return;
+    }
+
+    const text = await asrRecognize(pcm);
+    if (!text) {
+      setOrbState("ready");
+      $("hint").textContent = "没听清，再说一次";
+      return;
+    }
+
+    addBubble("me", text);
+    $("hint").textContent = "她说…";
+    await sendChat(text);
+
+  } catch (e) {
+    console.error(e);
+    toast("识别失败：" + (e.message || e), true);
+    setOrbState("ready");
+    $("hint").textContent = "点击麦克风开始说话";
+  }
+}
+
+// 重采样成 16kHz 单声道 Int16
+function floatTo16kHzPCM(audioBuf) {
+  let data;
+  if (audioBuf.numberOfChannels > 1) {
+    const a = audioBuf.getChannelData(0);
+    const b = audioBuf.getChannelData(1);
+    data = new Float32Array(a.length);
+    for (let i = 0; i < a.length; i++) data[i] = (a[i] + b[i]) / 2;
+  } else {
+    data = audioBuf.getChannelData(0);
+  }
+
+  const srcRate = audioBuf.sampleRate;
+  const dstRate = 16000;
+  let out;
+  if (srcRate === dstRate) {
+    out = data;
+  } else {
+    const ratio = srcRate / dstRate;
+    const n = Math.floor(data.length / ratio);
+    out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const idx = i * ratio;
+      const lo = Math.floor(idx);
+      const hi = Math.min(lo + 1, data.length - 1);
+      const frac = idx - lo;
+      out[i] = data[lo] * (1 - frac) + data[hi] * frac;
+    }
+  }
+
+  const pcm = new Int16Array(out.length);
+  for (let i = 0; i < out.length; i++) {
+    const s = Math.max(-1, Math.min(1, out[i]));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return pcm;
+}
+
+// 走服务端 /api/asr（内部转发 StepFun 云端识别）
+function asrRecognize(pcmInt16) {
+  return new Promise((resolve, reject) => {
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    const ws = new WebSocket(proto + location.host + "/api/asr");
+    const timeout = setTimeout(() => {
+      try { ws.close(); } catch (_) {}
+      reject(new Error("识别超时"));
+    }, 30000);
+
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        chunk_size: [5, 10, 5], wav_name: "h5",
+        is_speaking: true, mode: "2pass", itn: true,
+      }));
+      const buf = pcmInt16.buffer;
+      const CHUNK = 960;   // 60ms @16k mono pcm16
+      for (let i = 0; i < buf.byteLength; i += CHUNK) {
+        ws.send(buf.slice(i, i + CHUNK));
+      }
+      ws.send(JSON.stringify({ is_speaking: false, mode: "2pass" }));
+    };
+
+    ws.onmessage = evt => {
+      clearTimeout(timeout);
+      try {
+        const d = JSON.parse(evt.data);
+        resolve((d.text || "").trim());
+      } catch (e) {
+        reject(new Error("响应解析失败"));
+      }
+      ws.close();
+    };
+
+    ws.onerror = () => { clearTimeout(timeout); reject(new Error("识别服务连接失败")); };
+  });
+}
+
+// ─── 驱动数字人说话（chat 模式：走大模型） ──────────────────────
+function sendChat(text) {
+  if (!text || !sessionid) return Promise.resolve();
+  return fetch("/human", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      type: "chat",
+      interrupt: $("chkInterrupt").checked,
+      sessionid: String(sessionid),
+    }),
+  }).then(r => r.json()).then(d => {
+    if (d.code !== 0) toast("发送失败：" + d.msg, true);
+  });
+}
+
+// ─── 对话记录（无框文字） ────────────────────────────────────────
+let herName = "小雅";
+function addBubble(who, text) {
+  const box = $("bubbles");
+  const el = document.createElement("div");
+  el.className = "bubble " + (who === "me" ? "me" : "her");
+  if (who !== "me") el.setAttribute("data-name", herName);
+  el.textContent = text;
+  box.appendChild(el);
+  // 只保留最近 5 条，旧的自然淡出
+  while (box.children.length > 5) box.removeChild(box.firstChild);
+}
+
+// ─── 她的回复：订阅服务端 SSE ────────────────────────────────────
+// 后端 llm_response 出完整回复后会推 {"type":"reply","text":...}，
+// 同时 notify 里带 status(说话开始/结束)。用 SSE 比轮询及时。
+let evtSource = null;
+let lastSpeaking = false;
+
+function startReplyStream() {
+  if (evtSource || !sessionid) return;
+  try {
+    evtSource = new EventSource("/sse?sessionid=" + encodeURIComponent(sessionid));
+  } catch (e) {
+    console.warn("[sse] 订阅失败：", e);
+    return;
+  }
+
+  evtSource.onmessage = (ev) => {
+    let d;
+    try { d = JSON.parse(ev.data); } catch (_) { return; }
+
+    // 形态一：LLM 推的完整回复
+    if (d.type === "reply" && d.text) {
+      addBubble("her", d.text);
+      return;
+    }
+
+    // 形态二：TTS 的 start/end 事件（驱动球体状态）
+    if (d.status === "start" && !lastSpeaking) {
+      lastSpeaking = true;
+      if (!isRecording) { setOrbState("speaking"); setStatusDot("busy"); }
+    } else if (d.status === "end" && lastSpeaking) {
+      lastSpeaking = false;
+      if (!isRecording) {
+        setOrbState("ready");
+        setStatusDot("on");
+        $("hint").textContent = "点击麦克风开始说话";
+      }
+    }
+  };
+
+  evtSource.onerror = () => {
+    // 服务端关闭或网络抖动：稍后重订阅
+    if (evtSource) { evtSource.close(); evtSource = null; }
+    setTimeout(() => { if (sessionid) startReplyStream(); }, 3000);
+  };
+}
+
+// ─── 停止说话 ────────────────────────────────────────────────────
+function stopSpeaking() {
+  if (!sessionid) return;
+  fetch("/interrupt_talk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionid: String(sessionid) }),
+  }).then(() => {
+    setOrbState("ready");
+    setStatusDot("on");
+    $("hint").textContent = "点击麦克风开始说话";
+  });
+}
+
+// ─── 设置面板 ────────────────────────────────────────────────────
+function fillVoices(selected) {
+  const sel = $("selVoice");
+  sel.innerHTML = "";
+  FEMALE_VOICES.forEach(v => {
+    const o = document.createElement("option");
+    o.value = v.id;
+    o.textContent = v.name;
+    if (v.id === selected) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+
+async function loadConfig() {
+  // 人设
+  try {
+    const r = await fetch("/api/persona");
+    const d = await r.json();
+    if (d.code === 0 && d.data) {
+      fillVoices(d.data.voice || "linjiajiejie");
+      $("txtPersona").value = d.data.persona || DEFAULT_PERSONA;
+      $("rngSpeed").value = d.data.speed || 1;
+      $("valSpeed").textContent = Number(d.data.speed || 1).toFixed(2).replace(/0$/, "");
+      $("txtName").value = d.data.name || "小雅";
+      $("titleText").textContent = d.data.name || "AI 数字人";
+      if (d.data.name) herName = d.data.name;   // 对话记录里的署名
+    } else {
+      throw new Error("bad response");
+    }
+  } catch (_) {
+    fillVoices("linjiajiejie");
+    $("txtPersona").value = DEFAULT_PERSONA;
+    $("txtName").value = "小雅";
+  }
+
+  // 系统配置（API Key / 模型）
+  try {
+    const r2 = await fetch("/api/config");
+    const c = await r2.json();
+    if (c.code === 0 && c.data) {
+      const k = c.data.STEPFUN_API_KEY || "";
+      $("txtApiKey").value = k;
+      $("noteApiKey").textContent = c.data.STEPFUN_API_KEY_set
+        ? "已配置（显示为掩码）。重新粘贴可覆盖，留空则不改。"
+        : "到 platform.stepfun.com/interface-key 获取。留空则用 .env 里的配置。";
+      $("noteApiKey").style.color = c.data.STEPFUN_API_KEY_set ? "#7bd88f" : "";
+    }
+  } catch (_) {}
+}
+
+async function saveApiKey(key) {
+  const r = await fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ STEPFUN_API_KEY: key }),
+  });
+  const d = await r.json();
+  if (d.code !== 0) throw new Error(d.msg || "保存失败");
+  return d;
+}
+
+async function saveConfig(voice, persona, speed, name) {
+  const r = await fetch("/api/persona", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ voice, persona, speed, name }),
+  });
+  const d = await r.json();
+  if (d.code !== 0) throw new Error(d.msg || "保存失败");
+  return d;
+}
+
+async function testVoice() {
+  const btn = $("btnTestVoice");
+  btn.disabled = true;
+  btn.textContent = "合成中";
+  try {
+    const r = await fetch("/api/tts_preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        voice: $("selVoice").value,
+        text: "你好呀，我是小雅，很高兴见到你。",
+      }),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const blob = await r.blob();
+    new Audio(URL.createObjectURL(blob)).play();
+  } catch (e) {
+    toast("试听失败：" + (e.message || e), true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "试听";
+  }
+}
+
+// ─── 事件绑定 ────────────────────────────────────────────────────
+$("btnMic").addEventListener("click", () => {
+  if (isRecording) stopTalking(); else startTalking();
+});
+
+$("btnStop").addEventListener("click", stopSpeaking);
+
+$("orbWrap").addEventListener("click", () => {
+  if (isRecording) stopTalking(); else startTalking();
+});
+
+$("btnSettings").addEventListener("click", () => $("settings").classList.add("open"));
+$("settings").addEventListener("click", e => {
+  if (e.target === $("settings")) $("settings").classList.remove("open");
+});
+
+$("rngSpeed").addEventListener("input", e => {
+  $("valSpeed").textContent = Number(e.target.value).toFixed(2).replace(/0$/, "");
+});
+
+$("btnTestVoice").addEventListener("click", testVoice);
+
+// 实时语音开关
+$("chkRealtime").addEventListener("change", e => {
+  useRealtime = e.target.checked;
+  localStorage.setItem("useRealtime", useRealtime ? "1" : "0");
+  toast(useRealtime ? "已启用实时语音（下次点击麦克风生效）"
+                    : "已切到录音模式");
+});
+
+$("btnApply").addEventListener("click", async () => {
+  try {
+    // API Key（留空或掩码则不改）
+    const key = ($("txtApiKey").value || "").trim();
+    if (key && !/^\*+/.test(key)) {
+      await saveApiKey(key);
+    }
+
+    const newName = ($("txtName").value || "").trim() || "小雅";
+    await saveConfig(
+      $("selVoice").value, $("txtPersona").value,
+      parseFloat($("rngSpeed").value), newName,
+    );
+    // 界面上立刻生效
+    herName = newName;
+    $("titleText").textContent = newName;
+    document.title = newName;
+    toast("已保存，对新会话生效");
+    $("settings").classList.remove("open");
+  } catch (e) {
+    toast("保存失败：" + (e.message || e), true);
+  }
+});
+
+$("btnReset").addEventListener("click", () => {
+  fillVoices("linjiajiejie");
+  $("txtPersona").value = DEFAULT_PERSONA;
+  $("txtName").value = "小雅";
+  $("rngSpeed").value = 1;
+  $("valSpeed").textContent = "1";
+  toast("已恢复默认（记得点保存）");
+});
+
+// 文字对话
+$("btnText").addEventListener("click", () => {
+  const p = $("textPanel");
+  p.style.display = p.style.display === "none" ? "block" : "none";
+  if (p.style.display === "block") $("txtInput").focus();
+});
+
+async function submitText() {
+  const t = $("txtInput").value.trim();
+  if (!t) return;
+  if (!sessionid) return toast("还没连上，稍等一下", true);
+  addBubble("me", t);
+  $("txtInput").value = "";
+  await sendChat(t);
+}
+$("btnSendText").addEventListener("click", submitText);
+$("txtInput").addEventListener("keydown", e => { if (e.key === "Enter") submitText(); });
+
+// 空格键：按住说话（松开结束）
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && !e.repeat && document.activeElement.tagName !== "INPUT"
+      && document.activeElement.tagName !== "TEXTAREA") {
+    e.preventDefault();
+    startTalking();
+  }
+});
+document.addEventListener("keyup", e => {
+  if (e.code === "Space" && document.activeElement.tagName !== "INPUT"
+      && document.activeElement.tagName !== "TEXTAREA") {
+    e.preventDefault();
+    stopTalking();
+  }
+});
+
+// ─── 启动 ────────────────────────────────────────────────────────
+(async function init() {
+  layoutStage();
+  await loadConfig();
+
+  // 恢复实时语音开关状态
+  $("chkRealtime").checked = useRealtime;
+
+  // 检查服务端实时语音是否可用
+  try {
+    const r = await fetch("/api/realtime/ping");
+    const d = await r.json();
+    setRealtimeAvailable(d.code === 0 && d.data && d.data.available,
+                         d.data && d.data.reason);
+  } catch (_) {
+    setRealtimeAvailable(false, "服务端未响应");
+  }
+
+  // 语音球：先起 WebGPU，再连服务；球起不来的话降级成 CSS 圆点
+  try {
+    orbModule = await import("./orb.js");
+    await orbModule.initOrb($("orb"), "orb-shader.wgsl");
+    orbReady = true;
+  } catch (e) {
+    console.warn("[orb] WebGPU 初始化失败，降级：", e);
+    $("orbWrap").classList.add("webgpu-failed");
+  }
+
+  try {
+    await connect();
+    $("btnStop").disabled = false;
+    // 连上订阅 SSE，接收她说的文本和说话状态
+    startReplyStream();
+  } catch (e) {
+    $("hint").textContent = "连接失败，请刷新重试";
+  }
+})();
+</script>
+</body>
+</html>

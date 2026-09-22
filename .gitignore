@@ -1,0 +1,51 @@
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── 密钥与本地配置（重要：绝不能提交）────────────────────
+.env
+.env.local
+*.key
+data/persona.json
+
+# ── 模型权重（体积大，运行时下载）─────────────────────────
+*.pth
+*.pt
+*.onnx
+*.bin
+*.safetensors
+models/*.pth
+models/hub/
+
+# ── 生成的形象（体积大，运行时生成）───────────────────────
+data/avatars/*/
+!data/avatars/.gitkeep
+data/tmp/
+*.pkl
+
+# ── 日志与临时文件 ────────────────────────────────────────
+*.log
+*.err
+nohup.out
+.DS_Store
+Thumbs.db
+
+# ── 构建产物 ──────────────────────────────────────────────
+dist/
+build/
+*.spec
+*.exe
+*.zip
+*.whl
+
+# ── 编辑器 ────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+
+# ── Teamwork campaign 运行时状态（非源码）─────────────────
+.teamwork/
