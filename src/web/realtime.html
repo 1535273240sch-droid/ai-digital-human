@@ -1610,5 +1610,89 @@ document.addEventListener("keyup", e => {
   }
 })();
 </script>
+
+<!-- 桌面客户端模式（?client=1）：注入无框窗口的拖拽栏与窗口按钮。
+     浏览器直接访问时这段完全不生效，界面与原来一致。 -->
+<script>
+(function () {
+  if (!location.search.includes('client=1')) return;
+
+  const style = document.createElement('style');
+  style.textContent = `
+    #winBar {
+      position: fixed; top: 0; left: 0; right: 0; height: 36px; z-index: 99999;
+      display: flex; align-items: center; gap: 6px; padding: 0 8px 0 14px;
+      background: linear-gradient(180deg, rgba(0,0,0,.78), rgba(0,0,0,0));
+      user-select: none; -webkit-user-select: none;
+    }
+    #winBar .wb-title { flex:1; display:flex; align-items:center; gap:8px;
+      font-size:12px; color:rgba(255,255,255,.6); pointer-events:none; }
+    #winBar .wb-dot { width:7px; height:7px; border-radius:50%;
+      background:#3ddc84; box-shadow:0 0 8px #3ddc84; }
+    #winBar button { all:unset; cursor:pointer; width:28px; height:24px;
+      line-height:24px; text-align:center; border-radius:6px;
+      color:rgba(255,255,255,.72); font-size:13px; }
+    #winBar button:hover { background:rgba(255,255,255,.16); }
+    #winBar button.x:hover { background:rgba(255,80,80,.85); color:#fff; }
+  `;
+  document.head.appendChild(style);
+
+  const bar = document.createElement('div');
+  bar.id = 'winBar';
+  bar.className = 'pywebview-drag-region';
+  bar.innerHTML =
+    '<div class="wb-title"><span class="wb-dot"></span>小雅 · 拖动此栏移动窗口</div>' +
+    '<button id="wbTop" title="置顶开关">📌</button>' +
+    '<button id="wbMin" title="最小化">─</button>' +
+    '<button id="wbClose" class="x" title="关闭">✕</button>';
+  document.body.appendChild(bar);
+
+  const bind = () => {
+    const api = window.pywebview && window.pywebview.api;
+    if (!api) return;
+    document.getElementById('wbTop').onclick = async (e) => {
+      e.stopPropagation();
+      const on = await api.toggle_top();
+      e.target.style.opacity = on ? '1' : '.4';
+    };
+    document.getElementById('wbMin').onclick = (e) => { e.stopPropagation(); api.minimize(); };
+    document.getElementById('wbClose').onclick = (e) => { e.stopPropagation(); api.close(); };
+  };
+  if (window.pywebview && window.pywebview.api) bind();
+  else window.addEventListener('pywebviewready', bind);
+
+  // 自动播放兜底：万一 WebView2 仍拦截自动播放，用户第一次点击/按键时强制恢复
+  const resumeAudio = () => {
+    try {
+      document.querySelectorAll('audio, video').forEach((el) => {
+        el.muted = false;
+        if (el.play) { const p = el.play(); if (p && p.catch) p.catch(() => {}); }
+      });
+      [window.audioCtx, window.rtCtx].forEach((c) => {
+        if (c && c.state === 'suspended') c.resume();
+      });
+    } catch (e) { /* ignore */ }
+  };
+  window.addEventListener('pointerdown', resumeAudio);
+  window.addEventListener('keydown', resumeAudio);
+  setTimeout(resumeAudio, 1500);
+
+  // 自动重连：服务冷启动慢、或中途断线时自愈，避免窗口一直停在"未连接"
+  let _reconnectTries = 0;
+  const ensureConnected = () => {
+    try {
+      if (typeof connect !== 'function') return;
+      const st = (typeof pc !== 'undefined' && pc) ? pc.connectionState : null;
+      if (st === 'connected') { _reconnectTries = 0; return; }
+      if (st === 'new' || st === 'connecting') return;   // 正在连，别打断
+      if (st) { try { pc.close(); } catch (e) {} pc = null; }
+      _reconnectTries++;
+      if (_reconnectTries <= 60) connect().catch(() => {});
+    } catch (e) { /* ignore */ }
+  };
+  setTimeout(ensureConnected, 4000);
+  setInterval(ensureConnected, 5000);
+})();
+</script>
 </body>
 </html>
