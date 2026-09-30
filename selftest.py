@@ -185,7 +185,10 @@ def torch_test():
 
 def model_files_test():
     need = {
-        r"models\wav2lip.pth": 100,
+        r"models\musetalkV15\unet.pth": 3000,
+        r"models\sd-vae\diffusion_pytorch_model.safetensors": 300,
+        r"models\whisper\pytorch_model.bin": 130,
+        r"models\face-parse-bisent\79999_iter.pth": 45,
         r"models\hub\checkpoints\s3fd-619a316812.pth": 50,
     }
     missing = []
@@ -197,7 +200,7 @@ def model_files_test():
             missing.append(f"{rel} 只有 {os.path.getsize(p)//1024//1024}MB，疑似下载不全")
     if missing:
         raise RuntimeError("; ".join(missing))
-    return "wav2lip.pth + s3fd 就位"
+    return "MuseTalk v1.5 权重就位（unet/vae/whisper/人脸解析/检测）"
 
 
 def avatar_test():
