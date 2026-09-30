@@ -217,6 +217,14 @@ async def realtime_ws(request):
         except Exception:
             pass
 
+    def on_cloud_close():
+        """云端实时连接断开：通知前端并关闭浏览器连接，让界面复位。"""
+        push({"type": "error", "msg": "实时语音连接已断开，请重新点击麦克风"})
+        try:
+            asyncio.run_coroutine_threadsafe(ws.close(), loop)
+        except Exception:
+            pass
+
     rt = realtime_bridge.RealtimeSession(
         avatar_session,
         on_text=lambda who, text: push({"type": "text", "who": who, "text": text}),
@@ -224,6 +232,7 @@ async def realtime_ws(request):
         voice=persona.get_voice(),
         instructions=persona.apply_name(
             persona.get_persona(), persona.get_name()),
+        on_close=on_cloud_close,
     )
 
     try:
