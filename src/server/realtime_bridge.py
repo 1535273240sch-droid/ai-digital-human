@@ -102,25 +102,32 @@ class RealtimeSession:
     OUT_SR = 24000
     # 口型模型要的采样率
     IN_SR = 16000
+    # StepFun 实时接口输入侧按 24k 解析（与输出一致）
+    CLOUD_IN_SR = 24000
 
     def __init__(self, avatar_session, on_text=None, on_state=None,
-                 voice=None, instructions=None):
+                 voice=None, instructions=None, on_close=None):
         self.avatar = avatar_session
         self.on_text = on_text          # (who, text) -> None
         self.on_state = on_state        # (state) -> None
+        self.on_close = on_close        # 云端连接断开时回调（通知前端复位）
         self.voice = voice or os.getenv("STEPFUN_REALTIME_VOICE", "linjiajiejie")
         self.instructions = instructions or ""
 
         self.ws = None
         self.thread = None
+        self.ka_thread = None
         self._stop = threading.Event()
         self._send_lock = threading.Lock()
         self._ready = threading.Event()
         self._session_id = None
         self._closed = False
+        self._last_send_t = 0.0
 
         # 音频重采样残留（24k→16k 会有不足一帧的尾巴）
         self._leftover = None
+        # 上行重采样残留（16k→24k）
+        self._in_leftover = None
 
     # ── 连接与配置 ────────────────────────────────────────────
 
@@ -149,7 +156,28 @@ class RealtimeSession:
         if not self._ready.wait(timeout):
             logger.warning("[Realtime] 会话配置超时，继续尝试")
 
+        # 空闲保活：StepFun 会因"长时间无操作"掐断连接，这里定期补一点静音
+        self.ka_thread = threading.Thread(target=self._keepalive_loop, daemon=True)
+        self.ka_thread.start()
+
         return self
+
+    def _keepalive_loop(self, interval=5.0, idle=15.0):
+        """超过 idle 秒没有上行数据就补 100ms 静音，避免云连接被回收。"""
+        silent = base64.b64encode(b"\x00" * 4800).decode("ascii")  # 100ms @24k pcm16
+        while not self._closed and not self._stop.is_set():
+            time.sleep(interval)
+            try:
+                if self._closed:
+                    break
+                if time.time() - self._last_send_t >= idle:
+                    self._send({
+                        "event_id": "evt_ka",
+                        "type": "input_audio_buffer.append",
+                        "audio": silent,
+                    })
+            except Exception:
+                logger.debug("[Realtime] 保活失败", exc_info=True)
 
     def _on_open(self, ws):
         logger.info("[Realtime] 已连接，发送会话配置")
@@ -179,6 +207,7 @@ class RealtimeSession:
         try:
             with self._send_lock:
                 self.ws.send(json.dumps(obj, ensure_ascii=False))
+                self._last_send_t = time.time()
         except Exception:
             logger.debug("[Realtime] 发送失败", exc_info=True)
 
@@ -244,8 +273,15 @@ class RealtimeSession:
         logger.error("[Realtime] 连接错误: %s", error)
 
     def _on_close(self, ws, code=None, msg=None):
+        was_closed = self._closed
         self._closed = True
         logger.info("[Realtime] 连接关闭 code=%s", code)
+        # 通知上层（前端需要复位，否则界面还显示"实时对话中"但其实已经哑了）
+        if not was_closed and self.on_close:
+            try:
+                self.on_close()
+            except Exception:
+                logger.debug("[Realtime] on_close 回调异常", exc_info=True)
 
     # ── 音频：24kHz → 16kHz，推给口型 ────────────────────────
 
@@ -288,13 +324,37 @@ class RealtimeSession:
     # ── 对外接口 ──────────────────────────────────────────────
 
     def send_audio(self, pcm_bytes: bytes):
-        """浏览器推来的 16kHz PCM16，转 base64 发给实时接口。"""
+        """浏览器推来的 16kHz PCM16 → 升采样到 24kHz 再发给实时接口。
+
+        StepFun 实时接口的 input_audio_format=pcm16 是按 24kHz 解析的；
+        若直接塞 16k 数据，云端会把话音当慢放/变调处理，导致完全识别不出来。
+        """
         if not pcm_bytes or self._closed:
             return
+        try:
+            samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+        except Exception:
+            return
+        if samples.size == 0:
+            return
+
+        if self.IN_SR != self.CLOUD_IN_SR:
+            # 带上上次残余一起重采样，再按重叠量裁掉，避免块边界爆音
+            if self._in_leftover is not None and self._in_leftover.size:
+                samples = np.concatenate([self._in_leftover, samples])
+            up = resampy.resample(samples, self.IN_SR, self.CLOUD_IN_SR)
+            keep = int(self.IN_SR * 0.01)                      # 10ms 输入重叠
+            drop = int(keep * self.CLOUD_IN_SR / self.IN_SR)   # 对应输出样本数
+            out = up[drop:] if up.size > drop else up
+            self._in_leftover = samples[-keep:]
+        else:
+            out = samples
+
+        pcm24 = np.clip(out, -32768, 32767).astype(np.int16).tobytes()
         self._send({
             "event_id": "evt_audio",
             "type": "input_audio_buffer.append",
-            "audio": base64.b64encode(pcm_bytes).decode("ascii"),
+            "audio": base64.b64encode(pcm24).decode("ascii"),
         })
 
     def commit(self):
